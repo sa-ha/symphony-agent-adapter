@@ -115,3 +115,27 @@ test("CLI の fallback 引数", () => {
   assert.equal(backend.cooldownMs, 60000);
   assert.throws(() => createBackend("fallback", null, { primary: "rdsh", secondary: "rdsh" }));
 });
+
+test("DshBackend は turn timeout で rdsh を止めて失敗にする", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "dsh-ws-"));
+  const dsh = new DshBackend(`${process.execPath} ${fakeDsh}`, { SYMPHONY_DSH_API_KEY: "k", SYMPHONY_DSH_TURN_TIMEOUT_MS: "300" });
+  await dsh.startSession(ws);
+  const started = Date.now();
+  await assert.rejects(dsh.runTurn("HANG"), (e) => e.code === ERROR_ABNORMAL_EXIT && /turn timeout 300 ms/.test(e.message));
+  assert.ok(Date.now() - started < 5_000);
+});
+
+test("adapter 終了時に実行中 rdsh を process group ごと止める", async () => {
+  const { spawn, execFileSync } = await import("node:child_process");
+  const ws = mkdtempSync(path.join(os.tmpdir(), "dsh-ws-"));
+  const marker = `HANG-${process.pid}-${Date.now()}`;
+  const script = `import { DshBackend } from ${JSON.stringify(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/backends/dsh.js"))};
+const d = new DshBackend(${JSON.stringify(`${process.execPath} ${fakeDsh} ${marker}`)}, { SYMPHONY_DSH_API_KEY: "k" });
+await d.startSession(${JSON.stringify(ws)}); d.runTurn("HANG").catch(() => {}); setTimeout(() => process.kill(process.pid, "SIGTERM"), 500);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "ignore" });
+  await new Promise((resolve) => child.on("exit", resolve));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  let alive = "";
+  try { alive = execFileSync("pgrep", ["-f", marker], { encoding: "utf8" }); } catch { alive = ""; }
+  assert.equal(alive.trim(), "");
+});

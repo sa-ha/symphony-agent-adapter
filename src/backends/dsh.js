@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AdapterError,
+  ERROR_ABNORMAL_EXIT,
   ERROR_AUTH_MISSING,
   ERROR_CANCELLED,
   ERROR_START_FAILED,
@@ -36,6 +37,31 @@ export const DEFAULT_DSH_COMMAND = `rdsh --no-slim --profile headless --patch ${
 /** @type {string} */
 export const DSH_KEY_ENV = "SYMPHONY_DSH_API_KEY";
 
+/** 1 turn の上限（ms）。provider が応答しないまま止まる事例があったため必須。 */
+export const DEFAULT_DSH_TURN_TIMEOUT_MS = 20 * 60 * 1_000;
+
+/** adapter 終了時に kill する実行中 rdsh。 */
+const liveChildren = new Set();
+let exitHookInstalled = false;
+function installExitHook() {
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  const killAll = () => { for (const child of liveChildren) killChildProcess(child); liveChildren.clear(); };
+  process.on("exit", killAll);
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+    process.once(signal, () => { killAll(); process.exit(128 + ({ SIGHUP: 1, SIGINT: 2, SIGTERM: 15 })[signal]); });
+  }
+}
+
+/**
+ * @param {Record<string, string | undefined>} environment
+ * @returns {number}
+ */
+export function parseTurnTimeout(environment) {
+  const parsed = Number(environment.SYMPHONY_DSH_TURN_TIMEOUT_MS);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_DSH_TURN_TIMEOUT_MS;
+}
+
 export class DshBackend {
   /**
    * @param {string} [command] 上書き command（`-- --json` より前まで）
@@ -49,6 +75,7 @@ export class DshBackend {
     this.sessionId = null;
     this.currentChild = null;
     this.cancelled = false;
+    this.turnTimeoutMs = parseTurnTimeout({ ...process.env, ...environment });
   }
 
   /**
@@ -105,6 +132,13 @@ export class DshBackend {
       );
     }
     this.currentChild = child;
+    installExitHook();
+    liveChildren.add(child);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killChildProcess(child);
+    }, this.turnTimeoutMs);
     const stderrChunks = [];
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => stderrChunks.push(chunk));
@@ -134,6 +168,16 @@ export class DshBackend {
         );
       });
       child.on("exit", (status) => {
+        clearTimeout(timer);
+        liveChildren.delete(child);
+        if (timedOut) {
+          reject(new AdapterError(ERROR_ABNORMAL_EXIT, `DshBackend.runTurn failed: turn timeout ${this.turnTimeoutMs} ms. kind=${this.kind}`, {
+            functionName: "DshBackend.runTurn",
+            kind: this.kind,
+            timeoutMs: this.turnTimeoutMs,
+          }));
+          return;
+        }
         if (this.cancelled) {
           reject(new AdapterError(ERROR_CANCELLED, "DshBackend.runTurn failed: cancelled.", {
             functionName: "DshBackend.runTurn",
