@@ -13,13 +13,15 @@
  *
  * ## 制限
  * - Codex の dynamic tool（linear_graphql 等）は橋渡ししない
- * - 対応 kind は cursor と pi のみ
+ * - 対応 kind は cursor / pi / rdsh / fallback
  * - Symphony 本体の fork は不要
  */
 
 import { pathToFileURL } from "node:url";
 import { CursorBackend } from "./backends/cursor.js";
 import { PiBackend } from "./backends/pi.js";
+import { DshBackend } from "./backends/dsh.js";
+import { FallbackBackend, DEFAULT_COOLDOWN_MS } from "./backends/fallback.js";
 import { CodexAppServerShim } from "./appServer.js";
 import { AdapterError, ERROR_UNKNOWN_KIND } from "./errors.js";
 
@@ -31,11 +33,17 @@ Symphony 本体は改変せず、WORKFLOW.md の codex.command だけ差し替�
 Usage:
   symphony-agent --kind cursor
   symphony-agent --kind pi
+  symphony-agent --kind rdsh
+  symphony-agent --kind fallback --primary cursor --secondary rdsh
   symphony-agent --kind cursor --command 'agent -p --output-format stream-json --trust --force'
 
 Options:
-  --kind <cursor|pi>   必須。使う coding agent
-  --command <string>   任意。agent CLI の起動 command
+  --kind <cursor|pi|rdsh|fallback>  必須。使う coding agent
+  --command <string>   任意。agent CLI の起動 command（fallback では primary 用）
+  --primary <kind>     fallback 用。既定 cursor
+  --secondary <kind>   fallback 用。既定 rdsh。usage/rate limit 時にこちらで turn をやり直す
+  --secondary-command <string>  任意。secondary の起動 command
+  --cooldown-ms <n>    任意。上限検知後に新規 worker を secondary へ直行させる期間（既定 3600000、env SYMPHONY_FALLBACK_COOLDOWN_MS）
   --help               このメッセージ
 `;
 
@@ -49,6 +57,10 @@ export function parseCliArgs(argv) {
   let kind = "";
   let command = null;
   let help = false;
+  let primary = "cursor";
+  let secondary = "rdsh";
+  let secondaryCommand = null;
+  let cooldownMs = null;
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -72,10 +84,29 @@ export function parseCliArgs(argv) {
     }
     if (token.startsWith("--command=")) {
       command = token.slice("--command=".length);
+      continue;
+    }
+    const valued = { "--primary": "primary", "--secondary": "secondary", "--secondary-command": "secondaryCommand", "--cooldown-ms": "cooldownMs" };
+    const [flag, inline] = token.includes("=") ? [token.slice(0, token.indexOf("=")), token.slice(token.indexOf("=") + 1)] : [token, null];
+    if (flag in valued) {
+      const value = inline ?? argv[index + 1] ?? "";
+      if (inline === null) index += 1;
+      if (valued[flag] === "primary") primary = value;
+      if (valued[flag] === "secondary") secondary = value;
+      if (valued[flag] === "secondaryCommand") secondaryCommand = value;
+      if (valued[flag] === "cooldownMs") cooldownMs = value;
     }
   }
 
-  return { kind: kind.trim().toLowerCase(), command, help };
+  return {
+    kind: kind.trim().toLowerCase(),
+    command,
+    help,
+    primary: primary.trim().toLowerCase(),
+    secondary: secondary.trim().toLowerCase(),
+    secondaryCommand,
+    cooldownMs,
+  };
 }
 
 /**
@@ -85,7 +116,29 @@ export function parseCliArgs(argv) {
  * @param {string | null} command
  * @returns {CursorBackend | PiBackend}
  */
-export function createBackend(kind, command) {
+export function createBackend(kind, command, options = {}) {
+  if (kind === "fallback") {
+    const primaryKind = options.primary ?? "cursor";
+    const secondaryKind = options.secondary ?? "rdsh";
+    if (primaryKind === "fallback" || secondaryKind === "fallback" || primaryKind === secondaryKind) {
+      throw new AdapterError(
+        ERROR_UNKNOWN_KIND,
+        `createBackend failed: invalid fallback pair primary=${primaryKind} secondary=${secondaryKind}.`,
+        { functionName: "createBackend", kind, primaryKind, secondaryKind },
+      );
+    }
+    const raw = options.cooldownMs ?? process.env.SYMPHONY_FALLBACK_COOLDOWN_MS;
+    const parsed = Number(raw);
+    const cooldownMs = raw !== undefined && raw !== null && Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_COOLDOWN_MS;
+    return new FallbackBackend({
+      primary: createBackend(primaryKind, command),
+      secondary: createBackend(secondaryKind, options.secondaryCommand ?? null),
+      cooldownMs,
+    });
+  }
+  if (kind === "rdsh" || kind === "dsh") {
+    return command ? new DshBackend(command) : new DshBackend();
+  }
   if (kind === "cursor") {
     return command ? new CursorBackend(command) : new CursorBackend();
   }
@@ -94,7 +147,7 @@ export function createBackend(kind, command) {
   }
   throw new AdapterError(
     ERROR_UNKNOWN_KIND,
-    `createBackend failed: unknown kind=${JSON.stringify(kind)}. expected cursor or pi.`,
+    `createBackend failed: unknown kind=${JSON.stringify(kind)}. expected cursor, pi, rdsh or fallback.`,
     { functionName: "createBackend", kind, command },
   );
 }
@@ -117,7 +170,7 @@ export function main(argv) {
     return 2;
   }
 
-  const backend = createBackend(parsed.kind, parsed.command);
+  const backend = createBackend(parsed.kind, parsed.command, parsed);
   const shim = new CodexAppServerShim({ backend });
   shim.start();
   return undefined;

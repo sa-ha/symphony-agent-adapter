@@ -12,11 +12,13 @@ import { ERROR_UNKNOWN_KIND } from "../src/errors.js";
 import { cliPath } from "./helpers.js";
 
 test("parseCliArgs reads kind and command", () => {
-  assert.deepEqual(parseCliArgs(["--kind", "cursor"]), { kind: "cursor", command: null, help: false });
+  const defaults = { primary: "cursor", secondary: "rdsh", secondaryCommand: null, cooldownMs: null };
+  assert.deepEqual(parseCliArgs(["--kind", "cursor"]), { kind: "cursor", command: null, help: false, ...defaults });
   assert.deepEqual(parseCliArgs(["--kind=pi", "--command", "pi --mode rpc"]), {
     kind: "pi",
     command: "pi --mode rpc",
     help: false,
+    ...defaults,
   });
 });
 
@@ -30,7 +32,7 @@ test("unknown kind is a clear configuration error", () => {
   const result = spawnSync(process.execPath, [cliPath, "--kind", "grok"], { encoding: "utf8" });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /unknown kind="grok"/);
-  assert.match(result.stderr, /cursor or pi/);
+  assert.match(result.stderr, /cursor, pi, rdsh or fallback/);
   assert.throws(
     () => createBackend("grok", null),
     (error) => error.code === ERROR_UNKNOWN_KIND,

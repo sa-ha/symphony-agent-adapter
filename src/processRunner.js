@@ -15,6 +15,8 @@ import {
   ERROR_ABNORMAL_EXIT,
   ERROR_AUTH_MISSING,
   ERROR_CLI_NOT_FOUND,
+  ERROR_USAGE_LIMIT,
+  isUsageLimitText,
 } from "./errors.js";
 
 /**
@@ -146,6 +148,14 @@ export function killChildProcess(child) {
  */
 export function classifyExit(functionName, kind, status, stderr) {
   const details = { functionName, kind, status, stderr };
+  // 上限エラーの本文は "API key" 等を含みうるため、認証判定より先に見る。
+  if (isUsageLimitText(stderr)) {
+    return new AdapterError(
+      ERROR_USAGE_LIMIT,
+      `${functionName} failed: usage or rate limit. kind=${kind} status=${status} stderr=${stderr}`,
+      details,
+    );
+  }
   if (isAuthMissingText(stderr)) {
     return new AdapterError(
       ERROR_AUTH_MISSING,

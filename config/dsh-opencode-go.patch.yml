@@ -1,0 +1,7 @@
+# symphony-agent-adapter の rdsh fallback 用 overlay。
+# opencode-go route（~/.dsh/cordis.patch.yml 側で定義済み）の DeepSeek v4.1 Flash を既定 model にする。
+# key は adapter が SYMPHONY_DSH_API_KEY を OPENCODE_API_KEY として子 process にだけ渡す。
+- id: agent-default-model
+  config:
+    provider: opencode-go
+    model: deepseek-v4.1-flash
