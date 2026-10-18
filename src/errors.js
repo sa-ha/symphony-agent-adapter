@@ -36,3 +36,31 @@ export const ERROR_MALFORMED_OUTPUT = "agentMalformedOutput";
 export const ERROR_CANCELLED = "cancelled";
 /** @type {string} */
 export const ERROR_PROTOCOL = "protocolError";
+/** @type {string} */
+export const ERROR_USAGE_LIMIT = "agentUsageLimit";
+
+/**
+ * usage / rate limit と判定する文言。判定はこの一覧だけで行う。
+ * @type {RegExp[]}
+ */
+export const USAGE_LIMIT_PATTERNS = [
+  /usage limit/i,
+  /usage[- ]based (pricing|usage) (is )?(required|disabled)/i,
+  /rate[- ]?limit/i,
+  /too many requests/i,
+  /\b429\b/,
+  /quota/i,
+  /(limit|cap) (has been )?(reached|exceeded)/i,
+  /out of (credits|requests|usage)/i,
+  /insufficient (credits|balance)/i,
+  /resource[_ ]exhausted/i,
+];
+
+/**
+ * @param {string} text stderr や result 本文
+ * @returns {boolean}
+ */
+export function isUsageLimitText(text) {
+  const value = String(text ?? "");
+  return USAGE_LIMIT_PATTERNS.some((pattern) => pattern.test(value));
+}

@@ -72,3 +72,15 @@ Cursor や Pi から Linear を使う場合は、各 CLI 側の MCP / 認証を�
 ```bash
 node --test tests/*.test.js
 ```
+
+## rdsh fallback（Cursor の usage / rate limit 時）
+
+```
+node src/cli.js --kind fallback --primary cursor --secondary rdsh
+```
+
+- primary（Cursor）の失敗が `agentUsageLimit` に分類されたときだけ、同じ turn を rdsh でやり直す。分類の文言は `src/errors.js` の `USAGE_LIMIT_PATTERNS` に集約。
+- 切替後、その worker の残り turn は rdsh 固定。`~/.local/state/symphony-agent-adapter/usage-limit.json` に期限を書き、期限内（既定 1 時間、`--cooldown-ms` / `SYMPHONY_FALLBACK_COOLDOWN_MS`）に始まる worker は最初から rdsh を使う。
+- rdsh は `rdsh --no-slim --profile headless --patch config/dsh-opencode-go.patch.yml -- --json -` で起動し、prompt は stdin。model は opencode-go の `deepseek-v4.1-flash`（overlay で指定、route 自体は `~/.dsh/cordis.patch.yml` の `opencode-go`）。
+- key は `SYMPHONY_DSH_API_KEY` だけを読み、子 process の `OPENCODE_API_KEY` として渡す。hermes 用の `OPENCODE_GO_API_KEY` は空にして渡さない。未設定なら `agentAuthMissing` で止まる。
+- 1 turn の上限は `SYMPHONY_DSH_TURN_TIMEOUT_MS`（既定 20 分）。超えたら rdsh を process group ごと止めて失敗にする。adapter が終了・SIGTERM/SIGINT/SIGHUP を受けたときも実行中 rdsh を止める。
